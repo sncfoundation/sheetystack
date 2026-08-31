@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+#
+# SheetyStack — the spreadsheet-native platform. One CLI that installs and drives the whole
+# Sheet-Native Computing Foundation stack: orchestration, networking, delivery, storage,
+# and the whole toolbox. Think "a distribution" (Rancher/OpenShift) but for spreadsheets.
+#
+#   sheetystack components            # the catalog + what's installed
+#   sheetystack doctor                # check host dependencies
+#   sheetystack install [name|all]    # git clone components into the workspace + link CLIs
+#   sheetystack up                    # bring up the core (shared network, etc.)
+#   sheetystack status                # status of installed components
+#   sheetystack version               # stack + component versions
+#
+# Workspace: SHEETYSTACK_HOME (default ~/.sheetystack). Add "$SHEETYSTACK_HOME/bin" to PATH.
+# Requires: bash, git (docker/jq/curl for running the stack).
+set -euo pipefail
+HOME_DIR="${SHEETYSTACK_HOME:-$HOME/.sheetystack}"
+COMP="$HOME_DIR/components"; BIN="$HOME_DIR/bin"
+ORG="https://github.com/sncfoundation"
+mkdir -p "$COMP" "$BIN"
+
+# catalog:  repo | role | entrypoint (the CLI file to link onto PATH)
+catalog() {
+cat <<'CAT'
+sheeternetes|Orchestration (the flagship)|skctl
+sheetlium|Networking & service discovery|sheetlium
+sheetlux-cd|GitOps delivery|sheetlux
+sheetstor|Persistent storage|sheetstor
+sheetos|Node OS / bootstrap|sheetstrap
+sheetmesh|Multi-cluster federation|sheetmesh
+sheetfinops|FinOps ($0) dashboard|sheetfinops
+sheetaiops|AIOps anomaly detection|sheetaiops
+sheetassembly|WASM workloads|sheetassembly
+sheetelligence|AI / prompt-native|sheetelligence
+cloud-connectors|Managed-cloud connectors|connector
+sheethub|DevOps forge|sheethub
+CAT
+}
+
+installed() { [ -d "$COMP/$1/.git" ]; }
+
+cmd="${1:-components}"; shift || true
+case "$cmd" in
+  components|ls)
+    printf "%-18s %-34s %-10s\n" "COMPONENT" "ROLE" "INSTALLED"
+    catalog | while IFS='|' read -r repo role entry; do
+      installed "$repo" && s="yes" || s="no"
+      printf "%-18s %-34s %-10s\n" "$repo" "$role" "$s"
+    done
+    ;;
+  doctor)
+    ok=0
+    for t in git docker jq curl; do
+      if command -v "$t" >/dev/null 2>&1; then echo "  ✔ $t"; else echo "  ✘ $t (missing)"; ok=1; fi
+    done
+    [ $ok = 0 ] && echo "SheetyStack: host ready. It reconciles." || echo "SheetyStack: install the missing tools above."
+    exit $ok
+    ;;
+  install)
+    what="${1:-all}"
+    catalog | while IFS='|' read -r repo role entry; do
+      [ "$what" = "all" ] || [ "$what" = "$repo" ] || continue
+      if installed "$repo"; then
+        git -C "$COMP/$repo" pull --quiet --ff-only 2>/dev/null || true
+        echo "[sheetystack] updated $repo"
+      else
+        git clone --quiet "$ORG/$repo.git" "$COMP/$repo" && echo "[sheetystack] installed $repo"
+      fi
+      if [ -f "$COMP/$repo/$entry" ]; then chmod +x "$COMP/$repo/$entry" 2>/dev/null || true; ln -sf "$COMP/$repo/$entry" "$BIN/$entry"; fi
+    done
+    echo "[sheetystack] done. Add to PATH:  export PATH=\"$BIN:\$PATH\""
+    ;;
+  up)
+    if installed sheetlium; then "$COMP/sheetlium/sheetlium" up; else echo "sheetystack: run 'sheetystack install sheetlium' first" >&2; exit 1; fi
+    echo "[sheetystack] core network up. Start kubelets and 'sheetlux' for GitOps."
+    ;;
+  status)
+    catalog | while IFS='|' read -r repo role entry; do
+      installed "$repo" || continue
+      printf "%-18s " "$repo"
+      if [ "$repo" = "sheetlium" ] && command -v docker >/dev/null 2>&1; then "$COMP/$repo/$entry" status 2>/dev/null | head -1; else echo "installed ($entry)"; fi
+    done
+    ;;
+  version)
+    echo "SheetyStack v0.1.0"
+    catalog | while IFS='|' read -r repo role entry; do
+      installed "$repo" || continue
+      v="$(git -C "$COMP/$repo" describe --tags --always 2>/dev/null || echo '-')"
+      printf "  %-18s %s\n" "$repo" "$v"
+    done
+    ;;
+  *) echo "usage: sheetystack {components|doctor|install [name|all]|up|status|version}" >&2; exit 1;;
+esac
